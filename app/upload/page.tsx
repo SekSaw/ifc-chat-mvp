@@ -3,12 +3,12 @@
 import React, { useMemo, useRef, useState } from "react";
 
 const ALLOWED_EXT = [".ifc", ".ifczip"];
-const MAX_SIZE_MB = 500; // nur Frontend-Grenze
+const MAX_SIZE_MB = 500;
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [server, setServer] = useState<string>("https://app.speckle.systems");
-  const [token, setToken] = useState<string>("");     // PAT clientseitig (nur fürs MVP/Testing)
+  const [token, setToken] = useState<string>("");
   const [streamId, setStreamId] = useState("");
   const [status, setStatus] = useState<"idle"|"validating"|"uploading"|"success"|"error">("idle");
   const [message, setMessage] = useState<string>("");
@@ -27,11 +27,6 @@ export default function UploadPage() {
     return Object.keys(out).length ? out : null;
   }, [resp]);
 
-  function resetForm() {
-    setFile(null); setStreamId(""); setStatus("idle"); setMessage(""); setResp(null); setProgress(0);
-    inputRef.current && (inputRef.current.value = "");
-  }
-
   function validateFile(f: File | null): string | null {
     if (!f) return "Bitte eine Datei auswählen.";
     const okExt = ALLOWED_EXT.some(ext => f.name.toLowerCase().endsWith(ext));
@@ -40,14 +35,17 @@ export default function UploadPage() {
     if (sizeMb > MAX_SIZE_MB) return `Datei zu groß (${sizeMb.toFixed(1)} MB). Maximal ${MAX_SIZE_MB} MB.`;
     if (!server.trim()) return "Bitte Speckle-Server angeben.";
     if (!token.trim()) return "Bitte Personal Access Token (PAT) angeben.";
+    if (!streamId.trim()) return "Bitte eine Stream ID eintragen.";
     return null;
   }
 
-  // Direkter Upload mit Progress (ohne Vercel-Limit):
+  // Direkter Upload mit Progress zu /api/file/autodetect/{streamId}/main
   function directUpload(form: FormData): Promise<Response> {
     return new Promise((resolve, reject) => {
+      const cleanServer = server.replace(/\/$/, "");
+      const url = `${cleanServer}/api/file/autodetect/${encodeURIComponent(streamId.trim())}/main`;
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", `${server.replace(/\/$/, "")}/api/file/autodetect`, true);
+      xhr.open("POST", url, true);
       xhr.setRequestHeader("Authorization", `Bearer ${token.trim()}`);
       xhr.upload.onprogress = (evt) => { if (evt.lengthComputable) setProgress(Math.round((evt.loaded / evt.total) * 100)); };
       xhr.onload = () => resolve(new Response(xhr.responseText ?? "", { status: xhr.status }));
@@ -59,6 +57,7 @@ export default function UploadPage() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setResp(null); setMessage("");
+
     setStatus("validating");
     const err = validateFile(file);
     if (err) { setStatus("error"); setMessage(err); return; }
@@ -66,12 +65,14 @@ export default function UploadPage() {
     setStatus("uploading"); setProgress(1);
     try {
       const form = new FormData();
-      form.append("files[]", file as Blob, file?.name || "upload.ifc");
-      if (streamId.trim()) form.append("streamId", streamId.trim());
+      // Speckle akzeptiert hier "file" sicher; (die FE-Variante nutzt teils "files[]")
+      form.append("file", file as Blob, file?.name || "upload.ifc");
+
       const res = await directUpload(form);
       const text = await res.text();
       let data: any; try { data = JSON.parse(text); } catch { data = { raw: text }; }
       setResp(data);
+
       if (!res.ok) { setStatus("error"); setMessage(data?.error || `Upload fehlgeschlagen (HTTP ${res.status}).`); return; }
       setStatus("success"); setMessage("Upload erfolgreich direkt an Speckle übermittelt.");
     } catch (e: any) {
@@ -79,11 +80,16 @@ export default function UploadPage() {
     }
   }
 
+  function resetForm() {
+    setFile(null); setStreamId(""); setStatus("idle"); setMessage(""); setResp(null); setProgress(0);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
   return (
     <main style={{ padding: 24, maxWidth: 860, margin: "0 auto" }}>
       <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>IFC Upload (Direkt zu Speckle)</h1>
       <p style={{ color: "#666", marginBottom: 20 }}>
-        Unterstützt: <code>.ifc</code>, <code>.ifczip</code> – großer Upload ohne Vercel-Limit.
+        Unterstützt: <code>.ifc</code>, <code>.ifczip</code> – Upload direkt in deinen Stream.
       </p>
 
       <form onSubmit={onSubmit} style={{ display: "grid", gap: 14 }}>
@@ -95,23 +101,23 @@ export default function UploadPage() {
         </label>
 
         <label style={{ display: "grid", gap: 6 }}>
-          <div style={{ fontWeight: 600 }}>Speckle Personal Access Token (nur für Tests)</div>
+          <div style={{ fontWeight: 600 }}>Personal Access Token (nur Tests)</div>
           <input type="password" value={token} onChange={(e)=>setToken(e.target.value)}
                  placeholder="PAT einfügen…" autoComplete="off"
                  style={{ width:"100%", padding:10, border:"1px solid #ddd", borderRadius:10 }} />
-          <small style={{ color:"#666" }}>Hinweis: Der Token wird nur im Browser genutzt und nicht an unseren Server gesendet.</small>
+          <small style={{ color:"#666" }}>Wird nur im Browser genutzt, nicht an unseren Server geschickt.</small>
+        </label>
+
+        <label style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontWeight: 600 }}>Stream ID</div>
+          <input type="text" value={streamId} onChange={(e)=>setStreamId(e.target.value)}
+                 placeholder="z. B. abc123…" style={{ width:"100%", padding:10, border:"1px solid #ddd", borderRadius:10 }} />
         </label>
 
         <label style={{ display: "grid", gap: 6 }}>
           <div style={{ fontWeight: 600 }}>IFC-Datei</div>
           <input ref={inputRef} type="file" accept={ALLOWED_EXT.join(",")}
                  onChange={(e)=>setFile(e.target.files?.[0] || null)} />
-        </label>
-
-        <label style={{ display: "grid", gap: 6 }}>
-          <div style={{ fontWeight: 600 }}>Speckle Stream ID (optional)</div>
-          <input type="text" value={streamId} onChange={(e)=>setStreamId(e.target.value)}
-                 placeholder="z. B. abc123…" style={{ width:"100%", padding:10, border:"1px solid #ddd", borderRadius:10 }} />
         </label>
 
         <div style={{ display:"flex", gap:10 }}>
